@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 # Import handlers
 from handlers.validation import validate_content_handler
 from handlers.discovery import list_guardrails_handler, get_guardrail_info_handler
+from handlers.rewrite_handler import summarize_results
 
 
 @mcp.tool()
@@ -99,6 +100,48 @@ def get_guardrail_info(
         bedrock=bedrock,
         guardrail_id=guardrail_id,
         version=version,
+        logger=logger
+    )
+
+
+@mcp.tool()
+def rewrite_response(
+    user_query: str,
+    llm_response: str,
+    guardrail_id: str,
+    guardrail_version: str = "DRAFT",
+    model_id: str = "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    domain: str = "General",
+    policy_definition: str = None
+) -> Dict[str, Any]:
+    """
+    Validate LLM response and rewrite based on ARC findings.
+
+    This tool validates a response against an ARC policy and automatically
+    rewrites it to fix any policy violations or issues detected.
+
+    Args:
+        user_query: The original user question/prompt
+        llm_response: The LLM's response to validate and potentially rewrite
+        guardrail_id: Guardrail identifier (ID or ARN)
+        guardrail_version: Version number or 'DRAFT' (default: DRAFT)
+        model_id: Model ID for rewriting (default: Claude 3.5 Sonnet)
+        domain: Domain context like 'Healthcare', 'Finance' (default: General)
+        policy_definition: Optional policy text for additional context
+
+    Returns:
+        Dict containing original response, rewritten response (if needed),
+        findings, finding types, and rewrite metadata
+    """
+    return summarize_results(
+        user_query=user_query,
+        llm_response=llm_response,
+        guardrail_id=guardrail_id,
+        guardrail_version=guardrail_version,
+        bedrock_runtime_client=bedrock_runtime,
+        model_id=model_id,
+        domain=domain,
+        policy_definition=policy_definition,
         logger=logger
     )
 

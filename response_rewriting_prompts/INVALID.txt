@@ -1,0 +1,29 @@
+You are an expert in {domain} policy compliance. Your task is to rewrite an answer that violates policy requirements.
+
+**Original Question:**
+{question}
+
+**Original Answer:**
+{original_answer}
+
+**Policy Violations Detected:**
+{violations}
+
+**Suggested Corrections:**
+{suggestions}
+
+**Policy Rules Applied:**
+{applied_rules}
+
+Your task is to rewrite the answer to:
+1. Directly address the question
+2. Comply with all policy requirements
+3. Resolve all identified violations
+4. Incorporate the suggested corrections
+5. Maintain a natural, conversational tone
+6. Be factually accurate and helpful
+
+Do NOT include any meta-commentary like "here's a corrected version" or "I've rewritten the response".
+Start your response immediately with the corrected answer.
+
+Rewritten Answer:

@@ -6,9 +6,10 @@ A Model Context Protocol (MCP) server that provides standardized access to AWS B
 
 - **MCP-Compliant Server**: Exposes ARC validation as standardized MCP Tools
 - **AWS Bedrock Integration**: Direct integration with AWS Bedrock Guardrails and ARC
+- **Intelligent Response Rewriting**: Automatically rewrites LLM responses to fix policy violations
 - **Easy Deployment**: Deploy to Amazon Bedrock AgentCore Runtime with one command
 - **OAuth 2.0 Authentication**: Secure authentication via Amazon Cognito
-- **Comprehensive Tools**: Validate content, list guardrails, and retrieve guardrail details
+- **Comprehensive Tools**: Validate, rewrite, list guardrails, and retrieve guardrail details
 - **Serverless & Scalable**: Built on AWS serverless infrastructure
 
 ## Use Cases
@@ -99,7 +100,7 @@ export BEARER_TOKEN="<your-token-from-previous-step>"
 
 ## MCP Tools
 
-The server exposes three MCP tools:
+The server exposes four MCP tools:
 
 ### 1. `validate_content`
 
@@ -174,6 +175,63 @@ result = await mcp_client.call_tool(
 )
 ```
 
+### 4. `rewrite_response`
+
+Validate an LLM response and automatically rewrite it based on ARC findings. This tool combines validation and intelligent rewriting to fix policy violations.
+
+**Parameters:**
+- `user_query` (string, required): The original user question/prompt
+- `llm_response` (string, required): The LLM's response to validate and rewrite
+- `guardrail_id` (string, required): Guardrail identifier (ID or ARN)
+- `guardrail_version` (string, optional): Version number or 'DRAFT' (default: 'DRAFT')
+- `model_id` (string, optional): Model ID for rewriting (default: 'anthropic.claude-3-5-sonnet-20241022-v2:0')
+- `domain` (string, optional): Domain context like 'Healthcare', 'Finance' (default: 'General')
+- `policy_definition` (string, optional): Optional policy text for additional context
+
+**Example:**
+```python
+result = await mcp_client.call_tool(
+    "rewrite_response",
+    {
+        "user_query": "What are the eligibility requirements for benefits?",
+        "llm_response": "Employees can apply for benefits immediately after joining.",
+        "guardrail_id": "abc123xyz",
+        "guardrail_version": "1",
+        "domain": "Human Resources"
+    }
+)
+```
+
+**Response:**
+```json
+{
+  "query": "What are the eligibility requirements for benefits?",
+  "original_response": "Employees can apply for benefits immediately after joining.",
+  "rewritten_response": "Employees are eligible for benefits after completing 6 months of continuous employment, as required by company policy.",
+  "rewritten": true,
+  "findings": [
+    {
+      "result": "INVALID",
+      "explanation": "Response violates minimum tenure requirement",
+      "violations": ["Incorrect tenure period stated"],
+      "suggestions": ["Must specify 6-month minimum requirement"]
+    }
+  ],
+  "finding_types": ["INVALID"],
+  "findings_count": 1,
+  "domain": "Human Resources",
+  "message": "Successfully rewrote response for INVALID"
+}
+```
+
+**Finding Types Handled:**
+- **INVALID**: Complete policy violations - rewrites to comply with rules
+- **SATISFIABLE**: Technically correct but incomplete - enhances clarity
+- **NO_DATA**: Claims without supporting data - adds appropriate qualifications
+- **TRANSLATION_AMBIGUOUS**: Ambiguous statements - clarifies language
+- **TOO_COMPLEX**: Overly complex questions - suggests simplification
+- **VALID**: No issues found - returns original response unchanged
+
 ## Integration Examples
 
 ### Claude Desktop
@@ -237,11 +295,22 @@ ARC-MCP/
 ├── handlers/
 │   ├── __init__.py
 │   ├── validation.py                    # ARC validation logic
-│   └── discovery.py                     # Guardrail discovery
+│   ├── discovery.py                     # Guardrail discovery
+│   ├── rewrite_handler.py              # Response rewriting orchestration
+│   ├── response_rewriter.py            # ResponseRewriter class
+│   ├── rewrite_utils.py                # Finding processing utilities
+│   └── template_manager.py             # Prompt template management
+├── response_rewriting_prompts/          # Rewriting prompt templates
+│   ├── INVALID.txt                     # Template for INVALID findings
+│   ├── SATISFIABLE.txt                 # Template for SATISFIABLE findings
+│   ├── NO_DATA.txt                     # Template for NO_DATA findings
+│   └── TRANSLATION_AMBIGUOUS.txt       # Template for ambiguous findings
 ├── tests/
 │   ├── __init__.py
 │   ├── test_validation.py               # Validation tests
-│   └── test_discovery.py                # Discovery tests
+│   ├── test_discovery.py                # Discovery tests
+│   ├── test_rewrite_utils.py           # Rewrite utilities tests
+│   └── test_response_rewriter.py       # Response rewriter tests
 ├── scripts/
 │   ├── deploy-infrastructure.sh         # Deploy CloudFormation
 │   ├── deploy-agentcore.sh             # Deploy to AgentCore
