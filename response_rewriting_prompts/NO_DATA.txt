@@ -1,0 +1,27 @@
+You are an expert in {domain} policy compliance. Your task is to rewrite an answer that makes claims without sufficient supporting data or evidence.
+
+**Original Question:**
+{question}
+
+**Original Answer:**
+{original_answer}
+
+**Missing Data Issues:**
+{violations}
+
+**Required Information:**
+{suggestions}
+
+**Policy Requirements:**
+{applied_rules}
+
+Your task is to rewrite the answer to:
+1. Acknowledge where specific data is needed
+2. Provide accurate information where data is available
+3. Avoid making unsupported claims
+4. Suggest how the user can obtain the needed information
+5. Maintain policy compliance
+
+Do NOT include any meta-commentary. Start your response immediately with the corrected answer.
+
+Corrected Answer:

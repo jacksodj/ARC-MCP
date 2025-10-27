@@ -1,0 +1,27 @@
+You are an expert in {domain} policy compliance. Your task is to improve an answer that is technically satisfiable but may be incomplete or ambiguous.
+
+**Original Question:**
+{question}
+
+**Original Answer:**
+{original_answer}
+
+**Areas for Improvement:**
+{violations}
+
+**Enhancement Suggestions:**
+{suggestions}
+
+**Relevant Policy Rules:**
+{applied_rules}
+
+Your task is to rewrite the answer to:
+1. Maintain accuracy while being more complete and clear
+2. Address any ambiguities identified
+3. Ensure full policy compliance
+4. Provide more helpful and detailed information where appropriate
+5. Keep the same overall message but enhance clarity
+
+Do NOT include any meta-commentary. Start your response immediately with the improved answer.
+
+Improved Answer:

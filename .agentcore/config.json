@@ -1,0 +1,17 @@
+{
+  "name": "arc-mcp-server",
+  "entrypoint": "main.py",
+  "protocol": "MCP",
+  "runtime": {
+    "python_version": "3.11"
+  },
+  "execution_role": "arn:aws:iam::ACCOUNT_ID:role/ArcMcpServerRole",
+  "authorizer": {
+    "type": "customJWTAuthorizer",
+    "discoveryUrl": "https://cognito-idp.AWS_REGION.amazonaws.com/COGNITO_USER_POOL_ID/.well-known/openid-configuration",
+    "allowedClients": ["COGNITO_CLIENT_ID"]
+  },
+  "environment": {
+    "AWS_REGION": "us-east-1"
+  }
+}

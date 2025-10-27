@@ -1,0 +1,267 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Bedrock ARC MCP Server - Infrastructure for Amazon Bedrock AgentCore Deployment'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'arc-mcp-server'
+    Description: 'Name of the MCP server project'
+
+  TestUserName:
+    Type: String
+    Default: 'testuser'
+    Description: 'Initial test user for Cognito authentication'
+
+  TestUserPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: 'Password for the test user (minimum 8 characters)'
+    Default: 'TempPassword123!'
+
+Resources:
+  # ==================== IAM Execution Role ====================
+
+  ArcMcpServerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-execution-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - bedrock.amazonaws.com
+                - bedrock-agentcore.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/CloudWatchLogsFullAccess'
+      Policies:
+        - PolicyName: BedrockARCAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: BedrockGuardrailAccess
+                Effect: Allow
+                Action:
+                  - 'bedrock:ApplyGuardrail'
+                  - 'bedrock:GetGuardrail'
+                  - 'bedrock:ListGuardrails'
+                Resource:
+                  - !Sub 'arn:aws:bedrock:*:${AWS::AccountId}:guardrail/*'
+
+              - Sid: InvokeAutomatedReasoningPolicy
+                Effect: Allow
+                Action:
+                  - 'bedrock:InvokeAutomatedReasoningPolicy'
+                Resource:
+                  - !Sub 'arn:aws:bedrock:*:${AWS::AccountId}:automated-reasoning-policy/*'
+
+              - Sid: CloudWatchLogs
+                Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Sub 'arn:aws:logs:*:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/*'
+
+              - Sid: XRayTracing
+                Effect: Allow
+                Action:
+                  - 'xray:PutTraceSegments'
+                  - 'xray:PutTelemetryRecords'
+                Resource: '*'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ==================== Cognito User Pool ====================
+
+  ArcMcpUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${ProjectName}-users'
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+      Schema:
+        - Name: email
+          Required: true
+          Mutable: false
+      UserPoolTags:
+        Project: !Ref ProjectName
+
+  ArcMcpUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub '${ProjectName}-client'
+      UserPoolId: !Ref ArcMcpUserPool
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      RefreshTokenValidity: 30
+      AccessTokenValidity: 60
+      IdTokenValidity: 60
+      TokenValidityUnits:
+        RefreshToken: days
+        AccessToken: minutes
+        IdToken: minutes
+
+  # ==================== Test User ====================
+
+  TestUser:
+    Type: AWS::Cognito::UserPoolUser
+    Properties:
+      UserPoolId: !Ref ArcMcpUserPool
+      Username: !Ref TestUserName
+      UserAttributes:
+        - Name: email
+          Value: !Sub '${TestUserName}@example.com'
+        - Name: email_verified
+          Value: 'true'
+      MessageAction: SUPPRESS
+
+  # Set permanent password for test user (using custom resource)
+  TestUserPasswordFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-set-password'
+      Runtime: python3.11
+      Handler: index.handler
+      Role: !GetAtt TestUserPasswordFunctionRole.Arn
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+
+          def handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+
+                  client = boto3.client('cognito-idp')
+                  user_pool_id = event['ResourceProperties']['UserPoolId']
+                  username = event['ResourceProperties']['Username']
+                  password = event['ResourceProperties']['Password']
+
+                  client.admin_set_user_password(
+                      UserPoolId=user_pool_id,
+                      Username=username,
+                      Password=password,
+                      Permanent=True
+                  )
+
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {})
+
+  TestUserPasswordFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: CognitoSetPassword
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'cognito-idp:AdminSetUserPassword'
+                Resource: !GetAtt ArcMcpUserPool.Arn
+
+  SetTestUserPassword:
+    Type: Custom::SetPassword
+    DependsOn: TestUser
+    Properties:
+      ServiceToken: !GetAtt TestUserPasswordFunction.Arn
+      UserPoolId: !Ref ArcMcpUserPool
+      Username: !Ref TestUserName
+      Password: !Ref TestUserPassword
+
+  # ==================== CloudWatch Log Group ====================
+
+  McpServerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/bedrock-agentcore/${ProjectName}'
+      RetentionInDays: 7
+
+Outputs:
+  ExecutionRoleArn:
+    Description: 'ARN of the IAM execution role for MCP server'
+    Value: !GetAtt ArcMcpServerExecutionRole.Arn
+    Export:
+      Name: !Sub '${ProjectName}-execution-role-arn'
+
+  ExecutionRoleName:
+    Description: 'Name of the IAM execution role'
+    Value: !Ref ArcMcpServerExecutionRole
+
+  UserPoolId:
+    Description: 'Cognito User Pool ID'
+    Value: !Ref ArcMcpUserPool
+    Export:
+      Name: !Sub '${ProjectName}-user-pool-id'
+
+  UserPoolArn:
+    Description: 'Cognito User Pool ARN'
+    Value: !GetAtt ArcMcpUserPool.Arn
+
+  UserPoolClientId:
+    Description: 'Cognito User Pool Client ID'
+    Value: !Ref ArcMcpUserPoolClient
+    Export:
+      Name: !Sub '${ProjectName}-client-id'
+
+  AuthDiscoveryUrl:
+    Description: 'OAuth 2.0 discovery URL for AgentCore configuration'
+    Value: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${ArcMcpUserPool}/.well-known/openid-configuration'
+
+  TestUserName:
+    Description: 'Test user username'
+    Value: !Ref TestUserName
+
+  TestUserEmail:
+    Description: 'Test user email address'
+    Value: !Sub '${TestUserName}@example.com'
+
+  LogGroupName:
+    Description: 'CloudWatch Log Group for MCP server'
+    Value: !Ref McpServerLogGroup
+
+  GetBearerTokenCommand:
+    Description: 'AWS CLI command to get Bearer token for authentication'
+    Value: !Sub |
+      aws cognito-idp initiate-auth \
+        --auth-flow USER_PASSWORD_AUTH \
+        --client-id ${ArcMcpUserPoolClient} \
+        --auth-parameters USERNAME=${TestUserName},PASSWORD=${TestUserPassword} \
+        --region ${AWS::Region} \
+        --query 'AuthenticationResult.IdToken' \
+        --output text

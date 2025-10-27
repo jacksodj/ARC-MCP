@@ -1,0 +1,27 @@
+You are an expert in {domain} policy compliance. Your task is to rewrite an answer that contains ambiguous or unclear statements that could be misinterpreted.
+
+**Original Question:**
+{question}
+
+**Original Answer:**
+{original_answer}
+
+**Ambiguity Issues:**
+{violations}
+
+**Clarification Needed:**
+{suggestions}
+
+**Policy Context:**
+{applied_rules}
+
+Your task is to rewrite the answer to:
+1. Remove all ambiguities and unclear statements
+2. Use precise, unambiguous language
+3. Ensure the meaning is crystal clear
+4. Maintain policy compliance
+5. Be specific and concrete where the original was vague
+
+Do NOT include any meta-commentary. Start your response immediately with the clarified answer.
+
+Clarified Answer:

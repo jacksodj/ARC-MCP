@@ -205,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Project-specific
+deployment-info.txt
+bearer-token.txt
+*.pem
+*.key
