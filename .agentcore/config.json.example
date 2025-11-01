@@ -1,0 +1,13 @@
+{
+  "version": "1.0",
+  "projectName": "arc-mcp-server",
+  "projectId": "arc-mcp-server",
+  "region": "us-east-1",
+  "runtime": "python3.11",
+  "entrypoint": "main.py",
+  "execution_role": "arn:aws:iam::YOUR_ACCOUNT_ID:role/arc-mcp-server-execution-role",
+  "authorizer": {
+    "discoveryUrl": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_XXXXXXXXX/.well-known/openid-configuration",
+    "allowedClients": ["XXXXXXXXXXXXXXXXXXXXXXXXXX"]
+  }
+}

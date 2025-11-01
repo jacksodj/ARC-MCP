@@ -1,0 +1,44 @@
+default_agent: arc_mcp_server
+agents:
+  arc_mcp_server:
+    name: arc_mcp_server
+    entrypoint: /path/to/your/project/main.py
+    platform: linux/arm64
+    container_runtime: docker
+    source_path: /path/to/your/project
+    aws:
+      execution_role: arn:aws:iam::YOUR_ACCOUNT_ID:role/arc-mcp-server-execution-role
+      execution_role_auto_create: true
+      account: 'YOUR_ACCOUNT_ID'
+      region: us-east-1
+      ecr_repository: YOUR_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/bedrock-agentcore-arc_mcp_server
+      ecr_auto_create: false
+      network_configuration:
+        network_mode: PUBLIC
+        network_mode_config: null
+      protocol_configuration:
+        server_protocol: MCP
+      observability:
+        enabled: true
+      lifecycle_configuration:
+        idle_runtime_session_timeout: null
+        max_lifetime: null
+    bedrock_agentcore:
+      agent_id: arc_mcp_server-RANDOM_ID
+      agent_arn: arn:aws:bedrock-agentcore:us-east-1:YOUR_ACCOUNT_ID:runtime/arc_mcp_server-RANDOM_ID
+      agent_session_id: null
+    codebuild:
+      project_name: bedrock-agentcore-arc_mcp_server-builder
+      execution_role: arn:aws:iam::YOUR_ACCOUNT_ID:role/AmazonBedrockAgentCoreSDKCodeBuild-us-east-1-RANDOM_ID
+      source_bucket: bedrock-agentcore-codebuild-sources-YOUR_ACCOUNT_ID-us-east-1
+    memory:
+      mode: STM_ONLY
+      memory_id: arc_mcp_server_mem-RANDOM_ID
+      memory_arn: arn:aws:bedrock-agentcore:us-east-1:YOUR_ACCOUNT_ID:memory/arc_mcp_server_mem-RANDOM_ID
+      memory_name: arc_mcp_server_mem
+      event_expiry_days: 30
+      first_invoke_memory_check_done: false
+      was_created_by_toolkit: true
+    authorizer_configuration: null
+    request_header_configuration: null
+    oauth_configuration: null
