@@ -136,6 +136,8 @@ Resources:
         - Name: email
           Required: true
           Mutable: false
+      LambdaConfig:
+        PreTokenGeneration: !GetAtt PreTokenGenerationLambda.Arn
       UserPoolTags:
         Project: !Ref ProjectName
 
@@ -157,6 +159,72 @@ Resources:
         RefreshToken: days
         AccessToken: minutes
         IdToken: minutes
+
+  # ==================== Pre-Token Generation Lambda ====================
+  # This Lambda injects the 'client_id' claim into Cognito JWTs
+  # Required for AgentCore OAuth compatibility
+
+  PreTokenGenerationLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-add-client-id-claim'
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt PreTokenGenerationLambdaRole.Arn
+      Timeout: 10
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              """
+              Cognito Pre-Token Generation Lambda Trigger
+              Adds 'client_id' claim to JWT tokens for AgentCore compatibility
+              """
+              try:
+                  # Get client ID from request context
+                  client_id = event['callerContext']['clientId']
+
+                  # Add client_id claim to the token
+                  # AgentCore expects this claim but Cognito only provides 'aud'
+                  event['response']['claimsOverrideDetails'] = {
+                      'claimsToAddOrOverride': {
+                          'client_id': client_id
+                      }
+                  }
+
+                  return event
+
+              except Exception as e:
+                  print(f"Error in PreTokenGeneration Lambda: {str(e)}")
+                  # Return event unchanged on error (fail open)
+                  return event
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  PreTokenGenerationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-pretokengen-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  PreTokenGenerationLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PreTokenGenerationLambda
+      Principal: cognito-idp.amazonaws.com
+      Action: lambda:InvokeFunction
+      SourceArn: !Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*'
 
   # ==================== Test User ====================
 

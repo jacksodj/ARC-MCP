@@ -6,15 +6,83 @@ This document captures practical knowledge gained from deploying an MCP (Model C
 
 ---
 
+## 🔥 CRITICAL: Essential Requirements (Read This First!)
+
+### The Three Non-Negotiables
+
+If you only remember three things about deploying MCP servers to AgentCore, remember these:
+
+#### 1. Transport Configuration (MANDATORY)
+**Your MCP server MUST use stateless streamable-http transport:**
+```python
+# main.py - CORRECT configuration
+if __name__ == "__main__":
+    mcp.run(transport="streamable-http", stateless_http=True, host="0.0.0.0")
+```
+
+❌ **Wrong**: `transport="http"` → Results in 406 errors
+❌ **Wrong**: `transport="streamable-http"` without `stateless_http=True` → Session management issues
+❌ **Wrong**: `host="127.0.0.1"` → Won't work in Docker containers
+
+**AWS Documentation Quote**: "Stateless streamable-http only for compatibility with AWS session management"
+
+#### 2. Invocation Method (CRITICAL)
+**You CANNOT invoke MCP servers using raw boto3 API calls:**
+
+❌ **Wrong**:
+```python
+# This will NEVER work for MCP protocol
+client = boto3.client('bedrock-agentcore')
+response = client.invoke_agent_runtime(
+    agentRuntimeArn=arn,
+    payload=json.dumps({"jsonrpc": "2.0", "method": "tools/list"})
+)
+```
+
+✅ **Correct**: Use the MCP Python client library:
+```python
+# This is the ONLY supported method
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+async with streamablehttp_client(mcp_url, headers, timeout=120) as (read, write, _):
+    async with ClientSession(read, write) as session:
+        await session.initialize()  # Required MCP handshake
+        tools = await session.list_tools()
+```
+
+**Why**: AgentCore's MCP proxy expects the full MCP protocol handshake, not raw JSON-RPC
+
+#### 3. Authentication (REQUIRED)
+**MCP servers require authentication - no exceptions:**
+
+Without authentication → `403 Forbidden`
+
+**OAuth + Cognito** (Recommended):
+```python
+headers = {
+    "authorization": f"Bearer {cognito_bearer_token}",
+    "Content-Type": "application/json"
+}
+```
+
+**Critical Cognito Issue**: Standard Cognito JWTs use `aud` claim for client ID, but AgentCore expects `client_id` claim.
+
+**Solution**: Pre-Token Generation Lambda (see [Authentication Configuration](#authentication-configuration))
+
+---
+
 ## Table of Contents
 
-1. [Infrastructure Setup](#infrastructure-setup)
-2. [MCP Server Configuration](#mcp-server-configuration)
-3. [AgentCore Deployment](#agentcore-deployment)
-4. [Authentication Configuration](#authentication-configuration)
-5. [Testing and Debugging](#testing-and-debugging)
-6. [Common Issues and Solutions](#common-issues-and-solutions)
-7. [Key Takeaways](#key-takeaways)
+1. [Critical Requirements](#critical-essential-requirements-read-this-first)
+2. [Infrastructure Setup](#infrastructure-setup)
+3. [MCP Server Configuration](#mcp-server-configuration)
+4. [AgentCore Deployment](#agentcore-deployment)
+5. [Authentication Configuration](#authentication-configuration)
+6. [Invocation Examples](#invocation-examples)
+7. [Testing and Debugging](#testing-and-debugging)
+8. [Common Issues and Solutions](#common-issues-and-solutions)
+9. [Key Takeaways](#key-takeaways)
 
 ---
 
@@ -230,7 +298,7 @@ Cognito ID tokens include:
 }
 ```
 
-### Known Issue: JWT Claim Mismatch
+### Known Issue: JWT Claim Mismatch → ✅ SOLUTION
 
 **Problem**: AgentCore's JWT authorizer expects client ID in a `client_id` claim, but Cognito puts it in the `aud` (audience) claim.
 
@@ -239,13 +307,77 @@ Cognito ID tokens include:
 OAuth authorization failed: Claim 'client_id' value mismatch with configuration
 ```
 
-**Status**: Unresolved architectural incompatibility
+**✅ Solution: Pre-Token Generation Lambda**
 
-**Potential Solutions** (not yet tested):
-1. Use custom Cognito pre-token generation Lambda to add `client_id` claim
-2. Use SigV4 authentication instead of OAuth
-3. Use a different OAuth provider that includes `client_id` claim
-4. Configure AgentCore to use `aud` claim (may not be possible)
+Add a Cognito Lambda trigger to inject the `client_id` claim into JWTs:
+
+```yaml
+# CloudFormation template
+PreTokenGenerationLambda:
+  Type: AWS::Lambda::Function
+  Properties:
+    FunctionName: !Sub '${ProjectName}-add-client-id-claim'
+    Runtime: python3.11
+    Handler: index.lambda_handler
+    Code:
+      ZipFile: |
+        def lambda_handler(event, context):
+            # Get client ID from request context
+            client_id = event['callerContext']['clientId']
+
+            # Add client_id claim to the token
+            event['response']['claimsOverrideDetails'] = {
+                'claimsToAddOrOverride': {
+                    'client_id': client_id
+                }
+            }
+            return event
+    Role: !GetAtt PreTokenGenerationLambdaRole.Arn
+
+PreTokenGenerationLambdaRole:
+  Type: AWS::IAM::Role
+  Properties:
+    AssumeRolePolicyDocument:
+      Version: '2012-10-17'
+      Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+    ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+# Add Lambda permission for Cognito to invoke
+PreTokenGenerationLambdaPermission:
+  Type: AWS::Lambda::Permission
+  Properties:
+    FunctionName: !Ref PreTokenGenerationLambda
+    Principal: cognito-idp.amazonaws.com
+    Action: lambda:InvokeFunction
+    SourceArn: !GetAtt ArcMcpUserPool.Arn
+
+# Update User Pool with Lambda trigger
+ArcMcpUserPool:
+  Type: AWS::Cognito::UserPool
+  Properties:
+    # ... other properties ...
+    LambdaConfig:
+      PreTokenGeneration: !GetAtt PreTokenGenerationLambda.Arn
+```
+
+**After deploying Lambda**, tokens will include:
+```json
+{
+  "aud": "CLIENT_ID",
+  "client_id": "CLIENT_ID",  ← Added by Lambda!
+  "sub": "user-id",
+  // ... other claims
+}
+```
+
+**Alternative Solutions**:
+1. Use SigV4 authentication instead of OAuth (requires custom signing in MCP client)
+2. Use a different OAuth provider with `client_id` claim support
 
 ### Getting Bearer Tokens
 
@@ -260,6 +392,159 @@ aws cognito-idp initiate-auth \
 ```
 
 **Note**: Tokens expire after 60 minutes by default.
+
+---
+
+## Invocation Examples
+
+### Complete Working Example
+
+**Prerequisites**:
+```bash
+pip install mcp boto3
+```
+
+**Step 1: Get Bearer Token from Cognito**
+```bash
+BEARER_TOKEN=$(aws cognito-idp initiate-auth \
+  --auth-flow USER_PASSWORD_AUTH \
+  --client-id YOUR_CLIENT_ID \
+  --auth-parameters USERNAME=user@example.com,PASSWORD=YourPassword \
+  --region us-east-1 \
+  --query 'AuthenticationResult.IdToken' \
+  --output text)
+
+echo "Token: $BEARER_TOKEN"
+```
+
+**Step 2: Verify Token Has client_id Claim** (if using Lambda solution)
+```bash
+# Decode JWT to check claims (requires jq)
+echo $BEARER_TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | jq .
+# Should show: "client_id": "YOUR_CLIENT_ID"
+```
+
+**Step 3: Invoke MCP Server**
+```python
+#!/usr/bin/env python3
+"""
+Complete working example for invoking MCP servers on AgentCore
+"""
+import asyncio
+import os
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+async def invoke_mcp_server():
+    # Configuration
+    agent_arn = "arn:aws:bedrock-agentcore:us-east-1:ACCOUNT_ID:runtime/AGENT_NAME-RANDOM_ID"
+    region = "us-east-1"
+    bearer_token = os.getenv('BEARER_TOKEN')  # From Cognito
+
+    if not bearer_token:
+        raise ValueError("BEARER_TOKEN environment variable not set")
+
+    # URL-encode the ARN
+    encoded_arn = agent_arn.replace(':', '%3A').replace('/', '%2F')
+    mcp_url = f"https://bedrock-agentcore.{region}.amazonaws.com/runtimes/{encoded_arn}/invocations?qualifier=DEFAULT"
+
+    print(f"Connecting to: {mcp_url[:80]}...")
+
+    # Headers with OAuth bearer token
+    headers = {
+        "authorization": f"Bearer {bearer_token}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        # Connect using MCP client library
+        async with streamablehttp_client(
+            mcp_url,
+            headers,
+            timeout=120,
+            terminate_on_close=False
+        ) as (read_stream, write_stream, _):
+
+            # Create MCP session
+            async with ClientSession(read_stream, write_stream) as session:
+                # Step 1: Initialize (required MCP handshake)
+                print("Initializing MCP session...")
+                init_result = await session.initialize()
+                print(f"✅ Initialized! Server: {init_result.server_info.name}")
+
+                # Step 2: List available tools
+                print("\nListing tools...")
+                tools_result = await session.list_tools()
+                print(f"✅ Found {len(tools_result.tools)} tools:")
+                for tool in tools_result.tools:
+                    print(f"  - {tool.name}: {tool.description}")
+
+                # Step 3: Call a tool
+                print("\nCalling validate_content tool...")
+                call_result = await session.call_tool(
+                    "validate_content",
+                    arguments={
+                        "guardrail_id": "YOUR_GUARDRAIL_ID",
+                        "content": "Test content",
+                        "guardrail_version": "DRAFT",
+                        "source": "OUTPUT"
+                    }
+                )
+                print(f"✅ Tool result: {call_result}")
+
+                print("\n🎉 SUCCESS! All operations completed.")
+
+    except Exception as e:
+        print(f"❌ ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    asyncio.run(invoke_mcp_server())
+```
+
+**Usage**:
+```bash
+export BEARER_TOKEN="eyJraWQiOiJ..."  # Your Cognito token
+python3 invoke_mcp.py
+```
+
+### Expected Output
+
+```
+Connecting to: https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/arn%3Aaws...
+Initializing MCP session...
+✅ Initialized! Server: bedrock-arc-validator
+
+Listing tools...
+✅ Found 4 tools:
+  - validate_content: Validate text content against an AWS Bedrock ARC policy
+  - list_guardrails: List available AWS Bedrock Guardrails with ARC policies
+  - get_guardrail_info: Get detailed information about a specific guardrail
+  - rewrite_response: Validate LLM response and rewrite based on ARC findings
+
+Calling validate_content tool...
+✅ Tool result: {...}
+
+🎉 SUCCESS! All operations completed.
+```
+
+### Common Invocation Errors
+
+**403 Forbidden**:
+- Missing or invalid bearer token
+- Token expired (renew with `aws cognito-idp initiate-auth`)
+- OAuth not configured properly in AgentCore
+
+**406 Not Acceptable**:
+- Wrong transport in main.py (must be `streamable-http`)
+- Using boto3 `invoke_agent_runtime` instead of MCP client
+- Missing `stateless_http=True` parameter
+
+**Connection Timeout**:
+- AgentCore runtime not deployed yet (check `agentcore status`)
+- Network/VPC configuration issues
+- Wrong region in URL
 
 ---
 
