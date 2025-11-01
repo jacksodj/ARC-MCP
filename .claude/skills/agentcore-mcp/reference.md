@@ -279,6 +279,171 @@ aws lambda invoke \
 aws lambda update-function-code \
   --function-name <FUNCTION_NAME> \
   --zip-file fileb://function.zip
+
+# Delete function
+aws lambda delete-function \
+  --function-name <FUNCTION_NAME> \
+  --region <REGION>
+
+# List functions by pattern
+aws lambda list-functions \
+  --region <REGION> \
+  --query "Functions[?contains(FunctionName, '<PATTERN>')].FunctionName"
+```
+
+### Resource Cleanup Operations
+
+#### AgentCore Cleanup
+
+```bash
+# Preview what will be destroyed
+agentcore destroy --agent <AGENT_NAME> --dry-run
+
+# Destroy agent (keep ECR repository)
+agentcore destroy --agent <AGENT_NAME> --force
+
+# Destroy agent + ECR repository
+agentcore destroy --agent <AGENT_NAME> --force --delete-ecr-repo
+
+# List configured agents
+agentcore configure list
+
+# Stop running session
+agentcore stop-session --agent <AGENT_NAME>
+```
+
+#### Lambda Cleanup
+
+```bash
+# Delete Lambda function
+aws lambda delete-function \
+  --function-name <PROJECT_NAME>-add-client-id-claim \
+  --region <REGION>
+
+# Detach policy from Lambda role
+aws iam detach-role-policy \
+  --role-name <PROJECT_NAME>-pretokengen-lambda-role \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+# Delete Lambda role
+aws iam delete-role \
+  --role-name <PROJECT_NAME>-pretokengen-lambda-role
+```
+
+#### Cognito Cleanup
+
+```bash
+# Remove Lambda trigger from User Pool
+aws cognito-idp update-user-pool \
+  --user-pool-id <USER_POOL_ID> \
+  --region <REGION> \
+  --lambda-config '{}'
+
+# Delete user
+aws cognito-idp admin-delete-user \
+  --user-pool-id <USER_POOL_ID> \
+  --username <USERNAME>
+
+# Delete user pool client (optional)
+aws cognito-idp delete-user-pool-client \
+  --user-pool-id <USER_POOL_ID> \
+  --client-id <CLIENT_ID>
+
+# Delete user pool (optional - deletes everything)
+aws cognito-idp delete-user-pool \
+  --user-pool-id <USER_POOL_ID>
+```
+
+#### CloudFormation Cleanup
+
+```bash
+# Delete stack
+aws cloudformation delete-stack \
+  --stack-name <STACK_NAME> \
+  --region <REGION>
+
+# Wait for deletion
+aws cloudformation wait stack-delete-complete \
+  --stack-name <STACK_NAME>
+
+# Delete stack but retain specific resources
+aws cloudformation delete-stack \
+  --stack-name <STACK_NAME> \
+  --retain-resources ArcMcpUserPool ArcMcpUserPoolClient
+
+# Delete change set (if stack update failed)
+aws cloudformation delete-change-set \
+  --stack-name <STACK_NAME> \
+  --change-set-name <CHANGE_SET_NAME>
+```
+
+#### ECR Cleanup
+
+```bash
+# Delete all images in repository
+aws ecr batch-delete-image \
+  --repository-name <REPO_NAME> \
+  --image-ids "$(aws ecr list-images --repository-name <REPO_NAME> --query 'imageIds[*]' --output json)" \
+  --region <REGION>
+
+# Delete ECR repository
+aws ecr delete-repository \
+  --repository-name <REPO_NAME> \
+  --region <REGION> \
+  --force
+
+# List repositories by pattern
+aws ecr describe-repositories \
+  --region <REGION> \
+  --query "repositories[?contains(repositoryName, '<PATTERN>')].repositoryName"
+```
+
+#### IAM Cleanup
+
+```bash
+# List attached policies
+aws iam list-attached-role-policies \
+  --role-name <ROLE_NAME>
+
+# Detach managed policy
+aws iam detach-role-policy \
+  --role-name <ROLE_NAME> \
+  --policy-arn <POLICY_ARN>
+
+# List inline policies
+aws iam list-role-policies \
+  --role-name <ROLE_NAME>
+
+# Delete inline policy
+aws iam delete-role-policy \
+  --role-name <ROLE_NAME> \
+  --policy-name <POLICY_NAME>
+
+# Delete IAM role
+aws iam delete-role \
+  --role-name <ROLE_NAME>
+```
+
+#### Log Group Cleanup
+
+```bash
+# Delete log group
+aws logs delete-log-group \
+  --log-group-name <LOG_GROUP_NAME> \
+  --region <REGION>
+
+# List log groups by prefix
+aws logs describe-log-groups \
+  --region <REGION> \
+  --log-group-name-prefix <PREFIX> \
+  --query "logGroups[].logGroupName"
+
+# Delete multiple log groups
+for log_group in $(aws logs describe-log-groups \
+  --log-group-name-prefix "/aws/bedrock-agentcore/runtimes/<AGENT_NAME>" \
+  --query "logGroups[].logGroupName" --output text); do
+  aws logs delete-log-group --log-group-name "$log_group"
+done
 ```
 
 ### CloudWatch Logs

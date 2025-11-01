@@ -165,6 +165,259 @@ async with streamablehttp_client(mcp_url, headers) as (read, write, _):
    🎉 SUCCESS!
    ```
 
+### Phase 4: Cleanup & Resource Management
+
+#### Complete Cleanup (Remove Everything)
+
+1. **Destroy AgentCore Agent**
+   ```bash
+   # Preview what will be destroyed
+   agentcore destroy --agent AGENT_NAME --dry-run
+
+   # Destroy agent and all resources
+   agentcore destroy --agent AGENT_NAME --force --delete-ecr-repo
+   ```
+
+   This removes:
+   - AgentCore agent runtime
+   - ECR repository and all images
+   - CodeBuild project
+   - IAM execution role
+   - Memory resources
+   - Agent configuration
+
+2. **Clean Up Lambda Resources**
+
+   If using CloudFormation:
+   ```bash
+   # Lambda functions created by stack must be deleted first
+   aws lambda delete-function \
+     --function-name PROJECT_NAME-add-client-id-claim \
+     --region REGION
+
+   # Remove Lambda IAM role
+   aws iam detach-role-policy \
+     --role-name PROJECT_NAME-pretokengen-lambda-role \
+     --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+   aws iam delete-role \
+     --role-name PROJECT_NAME-pretokengen-lambda-role
+   ```
+
+3. **Delete CloudWatch Log Groups**
+   ```bash
+   # AgentCore runtime logs
+   aws logs delete-log-group \
+     --log-group-name /aws/bedrock-agentcore/runtimes/AGENT_ID-DEFAULT \
+     --region REGION
+
+   # Lambda logs
+   aws logs delete-log-group \
+     --log-group-name /aws/lambda/PROJECT_NAME-add-client-id-claim \
+     --region REGION
+
+   # MCP server logs (if exists)
+   aws logs delete-log-group \
+     --log-group-name /aws/bedrock-agentcore/PROJECT_NAME \
+     --region REGION
+   ```
+
+4. **Remove Lambda Trigger from Cognito**
+   ```bash
+   # Remove Pre-Token Generation trigger
+   aws cognito-idp update-user-pool \
+     --user-pool-id USER_POOL_ID \
+     --region REGION \
+     --lambda-config '{}'
+   ```
+
+5. **Delete CloudFormation Stack** (if everything is removed)
+   ```bash
+   # Only after cleaning up Lambda and triggers
+   aws cloudformation delete-stack \
+     --stack-name PROJECT_NAME-infrastructure \
+     --region REGION
+
+   # Wait for completion
+   aws cloudformation wait stack-delete-complete \
+     --stack-name PROJECT_NAME-infrastructure \
+     --region REGION
+   ```
+
+#### Partial Cleanup (Keep Cognito for Reuse)
+
+If you want to keep Cognito User Pool and users for other projects:
+
+1. **Destroy AgentCore Agent** (same as above)
+   ```bash
+   agentcore destroy --agent AGENT_NAME --force --delete-ecr-repo
+   ```
+
+2. **Remove Lambda Trigger from User Pool**
+   ```bash
+   aws cognito-idp update-user-pool \
+     --user-pool-id USER_POOL_ID \
+     --region REGION \
+     --lambda-config '{}'
+   ```
+
+3. **Delete Lambda Function and Role**
+   ```bash
+   # Delete function
+   aws lambda delete-function \
+     --function-name PROJECT_NAME-add-client-id-claim \
+     --region REGION
+
+   # Clean up role
+   aws iam detach-role-policy \
+     --role-name PROJECT_NAME-pretokengen-lambda-role \
+     --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+   aws iam delete-role \
+     --role-name PROJECT_NAME-pretokengen-lambda-role
+   ```
+
+4. **Delete CloudWatch Logs** (same as complete cleanup)
+
+5. **Keep CloudFormation Stack** (it will be in "drifted" state but Cognito resources remain functional)
+
+   Or manually delete non-Cognito resources from the stack using the AWS Console.
+
+#### Quick Cleanup Script
+
+```bash
+#!/bin/bash
+# cleanup-mcp-deployment.sh
+
+AGENT_NAME="arc_mcp_server"
+PROJECT_NAME="arc-mcp-server"
+REGION="us-east-1"
+
+echo "🧹 Cleaning up MCP deployment..."
+
+# 1. Destroy AgentCore agent
+echo "Destroying AgentCore agent..."
+agentcore destroy --agent $AGENT_NAME --force --delete-ecr-repo
+
+# 2. Get User Pool ID from CloudFormation
+USER_POOL_ID=$(aws cloudformation describe-stack-resources \
+  --stack-name ${PROJECT_NAME}-infrastructure \
+  --region $REGION \
+  --logical-resource-id ArcMcpUserPool \
+  --query 'StackResources[0].PhysicalResourceId' \
+  --output text)
+
+# 3. Remove Lambda trigger
+echo "Removing Lambda trigger from User Pool..."
+aws cognito-idp update-user-pool \
+  --user-pool-id $USER_POOL_ID \
+  --region $REGION \
+  --lambda-config '{}'
+
+# 4. Delete Lambda function
+echo "Deleting Lambda function..."
+aws lambda delete-function \
+  --function-name ${PROJECT_NAME}-add-client-id-claim \
+  --region $REGION
+
+# 5. Delete Lambda role
+echo "Deleting Lambda IAM role..."
+aws iam detach-role-policy \
+  --role-name ${PROJECT_NAME}-pretokengen-lambda-role \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+aws iam delete-role \
+  --role-name ${PROJECT_NAME}-pretokengen-lambda-role
+
+# 6. Delete CloudWatch logs
+echo "Deleting CloudWatch log groups..."
+aws logs delete-log-group \
+  --log-group-name /aws/lambda/${PROJECT_NAME}-add-client-id-claim \
+  --region $REGION 2>/dev/null || true
+
+aws logs delete-log-group \
+  --log-group-name /aws/bedrock-agentcore/${PROJECT_NAME} \
+  --region $REGION 2>/dev/null || true
+
+# Find and delete runtime logs
+AGENT_LOG_GROUPS=$(aws logs describe-log-groups \
+  --region $REGION \
+  --log-group-name-prefix "/aws/bedrock-agentcore/runtimes/${AGENT_NAME}" \
+  --query 'logGroups[].logGroupName' \
+  --output text)
+
+for log_group in $AGENT_LOG_GROUPS; do
+  echo "Deleting log group: $log_group"
+  aws logs delete-log-group --log-group-name "$log_group" --region $REGION
+done
+
+echo "✅ Cleanup complete!"
+echo ""
+echo "Kept resources (delete manually if not needed):"
+echo "  - Cognito User Pool: $USER_POOL_ID"
+echo "  - CloudFormation stack: ${PROJECT_NAME}-infrastructure (in drifted state)"
+```
+
+#### Verification After Cleanup
+
+```bash
+# Verify AgentCore agent is gone
+agentcore configure list
+# Should show: "No agents configured"
+
+# Verify Lambda is gone
+aws lambda list-functions --region REGION \
+  --query "Functions[?contains(FunctionName, 'PROJECT_NAME')].FunctionName"
+# Should return empty
+
+# Verify ECR repository is gone
+aws ecr describe-repositories --region REGION \
+  --query "repositories[?contains(repositoryName, 'AGENT_NAME')].repositoryName"
+# Should error with RepositoryNotFoundException
+
+# Check remaining log groups
+aws logs describe-log-groups --region REGION \
+  --log-group-name-prefix "/aws/bedrock-agentcore" \
+  --query "logGroups[].logGroupName"
+# Should not show your agent's logs
+```
+
+#### Troubleshooting Cleanup
+
+**Error: Cannot delete Lambda - still attached to User Pool**
+```bash
+# Remove the trigger first
+aws cognito-idp update-user-pool \
+  --user-pool-id USER_POOL_ID \
+  --lambda-config '{}'
+```
+
+**Error: Cannot delete role - policy still attached**
+```bash
+# List and detach all policies
+aws iam list-attached-role-policies --role-name ROLE_NAME
+aws iam detach-role-policy --role-name ROLE_NAME --policy-arn ARN
+```
+
+**Error: CloudFormation stack delete fails**
+- Check for resources created outside CloudFormation
+- Delete dependent resources manually first
+- Use `--retain-resources` to keep specific resources:
+  ```bash
+  aws cloudformation delete-stack \
+    --stack-name STACK_NAME \
+    --retain-resources ArcMcpUserPool ArcMcpUserPoolClient
+  ```
+
+**Background processes still running**
+```bash
+# If agentcore launch is running in background
+pkill -f "agentcore launch"
+
+# Check for Docker containers
+docker ps | grep agentcore
+docker stop CONTAINER_ID
+```
+
 ## Pre-Token Generation Lambda
 
 **CloudFormation Resource**:
@@ -314,6 +567,7 @@ For complete details, see:
 
 ## Quick Reference Commands
 
+### Deployment
 ```bash
 # Deploy infrastructure
 ./scripts/deploy-infrastructure.sh
@@ -326,7 +580,10 @@ agentcore launch
 
 # Get status
 agentcore status
+```
 
+### Testing
+```bash
 # Get bearer token
 ./scripts/get-bearer-token.sh > /tmp/bearer_token.txt
 
@@ -337,6 +594,27 @@ python3 scripts/test-mcp-invocation.py
 aws logs tail /aws/bedrock-agentcore/runtimes/AGENT_ARN-DEFAULT \
   --log-stream-name-prefix "$(date +%Y/%m/%d)/[runtime-logs]" \
   --follow
+```
+
+### Cleanup
+```bash
+# Preview cleanup
+agentcore destroy --agent AGENT_NAME --dry-run
+
+# Destroy agent (keep ECR)
+agentcore destroy --agent AGENT_NAME --force
+
+# Destroy agent + ECR
+agentcore destroy --agent AGENT_NAME --force --delete-ecr-repo
+
+# Delete Lambda
+aws lambda delete-function --function-name PROJECT_NAME-add-client-id-claim
+
+# Delete CloudWatch logs
+aws logs delete-log-group --log-group-name /aws/lambda/PROJECT_NAME-add-client-id-claim
+
+# Remove Lambda from Cognito
+aws cognito-idp update-user-pool --user-pool-id USER_POOL_ID --lambda-config '{}'
 ```
 
 ## Success Criteria
