@@ -146,6 +146,6 @@ def rewrite_response(
     )
 
 
-# Run server (AgentCore expects server at 0.0.0.0:8000/mcp)
+# Run server (AgentCore expects stateless HTTP MCP protocol)
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http")
+    mcp.run(transport="http", stateless_http=True, host="0.0.0.0")

@@ -51,23 +51,70 @@ cd ARC-MCP
 
 ### 2. Deploy AWS Infrastructure
 
-This deploys the IAM execution role and Cognito User Pool:
+This deploys the IAM execution role and Cognito User Pool for authentication.
+
+#### Pre-Deployment Checklist
+
+Before running the deployment script, decide:
+
+1. **Cognito User Pool**: Do you want to create a new User Pool or use an existing one?
+   - **Create New**: The script will create a dedicated Cognito User Pool for this MCP server
+   - **Use Existing**: Reuse an existing User Pool (useful if you have users already configured)
+     - To list your existing User Pools: `aws cognito-idp list-user-pools --max-results 20 --region us-east-1`
+
+2. **Test User**: Do you want to create a test user during deployment?
+   - **Yes**: The script will create a test user with credentials you provide
+   - **No**: You'll need to create users manually or use existing users in your User Pool
+
+#### Deploy the Infrastructure
 
 ```bash
 # Set your AWS region (optional, defaults to us-east-1)
 export AWS_REGION=us-east-1
 
-# Deploy CloudFormation stack
+# Run the interactive deployment script
 ./scripts/deploy-infrastructure.sh
 ```
 
+The script will prompt you for:
+- Whether to create a new Cognito User Pool or use an existing one
+- If using existing: the User Pool ID
+- Whether to create a test user
+- If creating test user: username and password
+
 This will create:
 - IAM Execution Role with Bedrock ARC permissions
-- Cognito User Pool for OAuth authentication
-- Test user account
+- Cognito User Pool for OAuth authentication (if creating new)
+- Cognito User Pool Client
+- Test user account (if requested)
 - CloudWatch Log Group
 
 After deployment, the script will save configuration details to `deployment-info.txt`.
+
+#### Manual User Creation (Optional)
+
+If you chose not to create a test user during deployment, you can create one manually:
+
+```bash
+# Get your User Pool ID from deployment-info.txt or CloudFormation outputs
+USER_POOL_ID="<your-pool-id>"
+
+# Create user
+aws cognito-idp admin-create-user \
+  --user-pool-id $USER_POOL_ID \
+  --username testuser \
+  --user-attributes Name=email,Value=testuser@example.com Name=email_verified,Value=true \
+  --message-action SUPPRESS \
+  --region us-east-1
+
+# Set permanent password
+aws cognito-idp admin-set-user-password \
+  --user-pool-id $USER_POOL_ID \
+  --username testuser \
+  --password YourPassword123! \
+  --permanent \
+  --region us-east-1
+```
 
 ### 3. Deploy MCP Server to AgentCore
 

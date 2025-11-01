@@ -211,3 +211,13 @@ deployment-info.txt
 bearer-token.txt
 *.pem
 *.key
+
+# AgentCore configuration (contains AWS account info, ARNs)
+.bedrock_agentcore.yaml
+.bedrock_agentcore/
+
+# AgentCore legacy config (may contain credentials)
+.agentcore/
+
+# Docker build artifacts
+.dockerignore
