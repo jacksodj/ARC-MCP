@@ -7,17 +7,43 @@ Parameters:
     Default: 'arc-mcp-server'
     Description: 'Name of the MCP server project'
 
+  UseExistingUserPool:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: 'Set to true to use an existing Cognito User Pool instead of creating a new one'
+
+  ExistingUserPoolId:
+    Type: String
+    Default: ''
+    Description: 'ID of existing Cognito User Pool (required if UseExistingUserPool is true)'
+
+  CreateTestUser:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: 'Set to true to create a test user in the Cognito User Pool'
+
   TestUserName:
     Type: String
     Default: 'testuser'
-    Description: 'Initial test user for Cognito authentication'
+    Description: 'Initial test user for Cognito authentication (only used if CreateTestUser is true)'
 
   TestUserPassword:
     Type: String
     NoEcho: true
     MinLength: 8
-    Description: 'Password for the test user (minimum 8 characters)'
+    Description: 'Password for the test user (minimum 8 characters, only used if CreateTestUser is true)'
     Default: 'TempPassword123!'
+
+Conditions:
+  CreateNewUserPool: !Equals [!Ref UseExistingUserPool, 'false']
+  UseExisting: !Equals [!Ref UseExistingUserPool, 'true']
+  ShouldCreateTestUser: !Equals [!Ref CreateTestUser, 'true']
 
 Resources:
   # ==================== IAM Execution Role ====================
@@ -73,6 +99,15 @@ Resources:
                   - 'xray:PutTraceSegments'
                   - 'xray:PutTelemetryRecords'
                 Resource: '*'
+
+              - Sid: ECRAccess
+                Effect: Allow
+                Action:
+                  - 'ecr:GetAuthorizationToken'
+                  - 'ecr:BatchGetImage'
+                  - 'ecr:GetDownloadUrlForLayer'
+                  - 'ecr:BatchCheckLayerAvailability'
+                Resource: '*'
       Tags:
         - Key: Project
           Value: !Ref ProjectName
@@ -81,6 +116,7 @@ Resources:
 
   ArcMcpUserPool:
     Type: AWS::Cognito::UserPool
+    Condition: CreateNewUserPool
     Properties:
       UserPoolName: !Sub '${ProjectName}-users'
       AdminCreateUserConfig:
@@ -100,6 +136,8 @@ Resources:
         - Name: email
           Required: true
           Mutable: false
+      LambdaConfig:
+        PreTokenGeneration: !GetAtt PreTokenGenerationLambda.Arn
       UserPoolTags:
         Project: !Ref ProjectName
 
@@ -107,7 +145,7 @@ Resources:
     Type: AWS::Cognito::UserPoolClient
     Properties:
       ClientName: !Sub '${ProjectName}-client'
-      UserPoolId: !Ref ArcMcpUserPool
+      UserPoolId: !If [UseExisting, !Ref ExistingUserPoolId, !Ref ArcMcpUserPool]
       ExplicitAuthFlows:
         - ALLOW_USER_PASSWORD_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
@@ -122,12 +160,79 @@ Resources:
         AccessToken: minutes
         IdToken: minutes
 
+  # ==================== Pre-Token Generation Lambda ====================
+  # This Lambda injects the 'client_id' claim into Cognito JWTs
+  # Required for AgentCore OAuth compatibility
+
+  PreTokenGenerationLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-add-client-id-claim'
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt PreTokenGenerationLambdaRole.Arn
+      Timeout: 10
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              """
+              Cognito Pre-Token Generation Lambda Trigger
+              Adds 'client_id' claim to JWT tokens for AgentCore compatibility
+              """
+              try:
+                  # Get client ID from request context
+                  client_id = event['callerContext']['clientId']
+
+                  # Add client_id claim to the token
+                  # AgentCore expects this claim but Cognito only provides 'aud'
+                  event['response']['claimsOverrideDetails'] = {
+                      'claimsToAddOrOverride': {
+                          'client_id': client_id
+                      }
+                  }
+
+                  return event
+
+              except Exception as e:
+                  print(f"Error in PreTokenGeneration Lambda: {str(e)}")
+                  # Return event unchanged on error (fail open)
+                  return event
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  PreTokenGenerationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-pretokengen-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  PreTokenGenerationLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PreTokenGenerationLambda
+      Principal: cognito-idp.amazonaws.com
+      Action: lambda:InvokeFunction
+      SourceArn: !Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/*'
+
   # ==================== Test User ====================
 
   TestUser:
     Type: AWS::Cognito::UserPoolUser
+    Condition: ShouldCreateTestUser
     Properties:
-      UserPoolId: !Ref ArcMcpUserPool
+      UserPoolId: !If [UseExisting, !Ref ExistingUserPoolId, !Ref ArcMcpUserPool]
       Username: !Ref TestUserName
       UserAttributes:
         - Name: email
@@ -139,6 +244,7 @@ Resources:
   # Set permanent password for test user (using custom resource)
   TestUserPasswordFunction:
     Type: AWS::Lambda::Function
+    Condition: ShouldCreateTestUser
     Properties:
       FunctionName: !Sub '${ProjectName}-set-password'
       Runtime: python3.11
@@ -175,6 +281,7 @@ Resources:
 
   TestUserPasswordFunctionRole:
     Type: AWS::IAM::Role
+    Condition: ShouldCreateTestUser
     Properties:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
@@ -193,14 +300,18 @@ Resources:
               - Effect: Allow
                 Action:
                   - 'cognito-idp:AdminSetUserPassword'
-                Resource: !GetAtt ArcMcpUserPool.Arn
+                Resource: !If
+                  - UseExisting
+                  - !Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${ExistingUserPoolId}'
+                  - !GetAtt ArcMcpUserPool.Arn
 
   SetTestUserPassword:
     Type: Custom::SetPassword
+    Condition: ShouldCreateTestUser
     DependsOn: TestUser
     Properties:
       ServiceToken: !GetAtt TestUserPasswordFunction.Arn
-      UserPoolId: !Ref ArcMcpUserPool
+      UserPoolId: !If [UseExisting, !Ref ExistingUserPoolId, !Ref ArcMcpUserPool]
       Username: !Ref TestUserName
       Password: !Ref TestUserPassword
 
@@ -225,13 +336,16 @@ Outputs:
 
   UserPoolId:
     Description: 'Cognito User Pool ID'
-    Value: !Ref ArcMcpUserPool
+    Value: !If [UseExisting, !Ref ExistingUserPoolId, !Ref ArcMcpUserPool]
     Export:
       Name: !Sub '${ProjectName}-user-pool-id'
 
   UserPoolArn:
     Description: 'Cognito User Pool ARN'
-    Value: !GetAtt ArcMcpUserPool.Arn
+    Value: !If
+      - UseExisting
+      - !Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${ExistingUserPoolId}'
+      - !GetAtt ArcMcpUserPool.Arn
 
   UserPoolClientId:
     Description: 'Cognito User Pool Client ID'
@@ -241,7 +355,10 @@ Outputs:
 
   AuthDiscoveryUrl:
     Description: 'OAuth 2.0 discovery URL for AgentCore configuration'
-    Value: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${ArcMcpUserPool}/.well-known/openid-configuration'
+    Value: !If
+      - UseExisting
+      - !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${ExistingUserPoolId}/.well-known/openid-configuration'
+      - !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${ArcMcpUserPool}/.well-known/openid-configuration'
 
   TestUserName:
     Description: 'Test user username'
